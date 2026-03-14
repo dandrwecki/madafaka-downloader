@@ -27,6 +27,10 @@ pip3 install --upgrade yt-dlp mutagen pyinstaller \
     --break-system-packages 2>/dev/null || \
 pip3 install --upgrade yt-dlp mutagen pyinstaller
 
+# tkinter jest wymagane przez PyInstaller do bundlowania GUI
+PY_VER=$(python3 -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')")
+brew install "python-tk@${PY_VER}" 2>/dev/null || true
+
 # --- PyInstaller build ---
 echo "[3/3] Budowanie .app bundle (PyInstaller)..."
 

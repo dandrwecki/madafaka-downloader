@@ -128,6 +128,7 @@ madafaka-downloader/
 |---------|-------------|
 | `ffmpeg nie znaleziony` | macOS: `brew install ffmpeg` · Windows: uruchom ponownie `build_exe.bat` |
 | `yt-dlp nie zainstalowany` | `pip3 install yt-dlp` (macOS) / `pip install yt-dlp` (Windows) |
+| `No module named '_tkinter'` | `brew install python-tk@3.X` (gdzie 3.X to wersja z `python3 --version`) |
 | Aplikacja zablokowana przez macOS | PPM na `.app` → **Otwórz** lub Ustawienia → Prywatność i bezpieczeństwo |
 | SmartScreen na Windows | „Więcej informacji" → „Uruchom mimo to" |
 | Plik nie pobiera się | Utwór może być niedostępny w Polsce — spróbuj z VPN |

@@ -28,7 +28,12 @@ pip3 install --upgrade yt-dlp mutagen \
     --break-system-packages 2>/dev/null || \
 pip3 install --upgrade yt-dlp mutagen
 
-echo "[4/4] Gotowe!"
+# --- tkinter (wymagane dla GUI) ---
+echo "[4/4] Instalowanie python-tk (GUI)..."
+PY_VER=$(python3 -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')")
+brew install "python-tk@${PY_VER}" 2>/dev/null || true
+
+echo "Gotowe!"
 echo ""
 echo "============================================================"
 echo "  Setup zakończony!"
