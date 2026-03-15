@@ -65,6 +65,7 @@ class _GUILogger:
             'Remote components',
             'challenge solver',
             'SABR',
+            'Only images are available',
         )
         if any(s in msg for s in _ignore):
             return
@@ -105,7 +106,6 @@ def run_download(url: str, folder: str, log, set_progress, workers: int = 1):
         'quiet': True,
         'extract_flat': 'in_playlist',
         'logger': _GUILogger(log),
-        'extractor_args': {'youtube': {'player_client': ['mweb']}},
     }
     try:
         with yt_dlp.YoutubeDL(extract_opts) as ydl:
@@ -168,9 +168,6 @@ def run_download(url: str, folder: str, log, set_progress, workers: int = 1):
         'retries': 5,
         'fragment_retries': 5,
         'quiet': True,
-        'extractor_args': {
-            'youtube': {'player_client': ['mweb']},
-        },
     }
 
     # ── Faza B: pobieranie (sekwencyjne lub równoległe) ────────
@@ -510,7 +507,7 @@ class App(tk.Tk):
                             highlightbackground=_C['border'], highlightthickness=1)
         spin_box.pack(side='left')
         tk.Spinbox(spin_box, textvariable=self._workers_var,
-                   from_=1, to=5, width=3,
+                   from_=1, to=10, width=3,
                    font=('Segoe UI', 12, 'bold'),
                    bg=_C['surface'], fg=_C['accent'],
                    buttonbackground=_C['surface'],
@@ -579,11 +576,16 @@ class App(tk.Tk):
     @staticmethod
     def _workers_label(n: int) -> str:
         labels = {
-            1: 'jeden plik na raz (bezpieczne, wolniejsze)',
-            2: 'dwa pliki na raz',
-            3: 'trzy pliki na raz (zalecane)',
-            4: 'cztery pliki na raz',
-            5: 'pięć plików na raz (maksymalne obciążenie)',
+            1:  'jeden plik na raz (bezpieczne, wolniejsze)',
+            2:  'dwa pliki na raz',
+            3:  'trzy pliki na raz',
+            4:  'cztery pliki na raz',
+            5:  'pięć plików na raz (zalecane)',
+            6:  'sześć plików na raz',
+            7:  'siedem plików na raz',
+            8:  'osiem plików na raz',
+            9:  'dziewięć plików na raz',
+            10: 'dziesięć plików na raz (maksymalne obciążenie)',
         }
         return labels.get(int(n), '')
 
@@ -638,7 +640,7 @@ class App(tk.Tk):
         if not folder:
             messagebox.showwarning('Brak katalogu', 'Wybierz katalog docelowy.')
             return
-        workers = max(1, min(5, self._workers_var.get()))
+        workers = max(1, min(10, self._workers_var.get()))
         self._btn.configure(state='disabled', text='\u23f3  Trwa pobieranie\u2026')
         threading.Thread(target=self._worker, args=(url, folder, workers), daemon=True).start()
 
