@@ -2,7 +2,7 @@
 setlocal enabledelayedexpansion
 
 echo ============================================================
-echo   YouTube Playlist Downloader - Windows Build
+echo   Madafaka Downloader - Windows Build
 echo   Buduje plik .exe z GUI i wbudowanym ffmpeg
 echo ============================================================
 echo.
@@ -19,13 +19,19 @@ if errorlevel 1 (
 :: -------------------------------------------------------
 echo [1/4] Instalowanie zaleznosci Python...
 :: -------------------------------------------------------
-pip install yt-dlp mutagen pyinstaller --quiet --upgrade
+pip install yt-dlp mutagen Pillow pyinstaller --quiet --upgrade
 if errorlevel 1 (
     echo BLAD: Nie udalo sie zainstalowac zaleznosci.
     pause
     exit /b 1
 )
 echo OK.
+
+:: -------------------------------------------------------
+echo   INFO: Dla pelnej predkosci pobierania wymagany jest Node.js.
+echo   Jezeli pobieranie jest wolne (ok. 80 KB/s), zainstaluj Node.js:
+echo   https://nodejs.org/  (LTS, Windows Installer)
+:: -------------------------------------------------------
 
 :: -------------------------------------------------------
 echo [2/4] Pobieranie ffmpeg (statyczna wersja Windows)...
@@ -92,4 +98,16 @@ echo   Gotowe!
 echo   Plik: dist\madafaka-downloader.exe
 echo   Uruchom dwuklikiem - otworzy sie okno aplikacji.
 echo ============================================================
+
+:: Potwierdz ze plik exe istnieje
+if exist "dist\madafaka-downloader.exe" (
+    echo.
+    echo [OK] Plik exe zostal pomyslnie utworzony:
+    dir /b "dist\madafaka-downloader.exe"
+) else (
+    echo.
+    echo [UWAGA] Nie znaleziono dist\madafaka-downloader.exe
+    echo Sprawdz folder dist\ czy plik nie ma innej nazwy.
+    dir /b "dist\" 2>nul
+)
 pause

@@ -2,7 +2,7 @@
 set -e
 
 echo "============================================================"
-echo "  YouTube Playlist Downloader - macOS Build"
+echo "  Madafaka Downloader - macOS Build"
 echo "  Buduje .app bundle (dwuklik na macOS)"
 echo "============================================================"
 echo ""
@@ -15,24 +15,32 @@ fi
 
 # --- ffmpeg ---
 if ! command -v ffmpeg &>/dev/null; then
-    echo "[1/3] Instalowanie ffmpeg..."
+    echo "[1/4] Instalowanie ffmpeg..."
     brew install ffmpeg
 else
-    echo "[1/3] ffmpeg juz zainstalowany."
+    echo "[1/4] ffmpeg juz zainstalowany."
+fi
+
+# --- Node.js (wymagane przez yt-dlp do rozwiazywania n-challenge YouTube) ---
+if ! command -v node &>/dev/null; then
+    echo "[2/4] Instalowanie Node.js (yt-dlp n-challenge solver)..."
+    brew install node
+else
+    echo "[2/4] Node.js juz zainstalowany."
 fi
 
 # --- Python deps ---
-echo "[2/3] Instalowanie zaleznosci Python (yt-dlp, mutagen, pyinstaller)..."
-pip3 install --upgrade yt-dlp mutagen pyinstaller \
+echo "[3/4] Instalowanie zaleznosci Python (yt-dlp, mutagen, Pillow, pyinstaller)..."
+pip3 install --upgrade yt-dlp mutagen Pillow pyinstaller \
     --break-system-packages 2>/dev/null || \
-pip3 install --upgrade yt-dlp mutagen pyinstaller
+pip3 install --upgrade yt-dlp mutagen Pillow pyinstaller
 
 # tkinter jest wymagane przez PyInstaller do bundlowania GUI
 PY_VER=$(python3 -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')")
 brew install "python-tk@${PY_VER}" 2>/dev/null || true
 
 # --- PyInstaller build ---
-echo "[3/3] Budowanie .app bundle (PyInstaller)..."
+echo "[4/4] Budowanie .app bundle (PyInstaller)..."
 
 FFMPEG_BIN=$(which ffmpeg)
 FFPROBE_BIN=$(which ffprobe)

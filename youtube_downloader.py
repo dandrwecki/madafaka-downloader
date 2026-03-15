@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-YouTube Playlist Downloader — GUI
+Madafaka Downloader — GUI
 MP3 · Stereo · 320 kbps · Auto-clean dla Rekordbox
 
 Kroki:
@@ -15,6 +15,7 @@ import re
 import queue
 import shutil
 import threading
+import concurrent.futures
 import tkinter as tk
 from tkinter import scrolledtext, filedialog, messagebox
 
@@ -52,57 +53,45 @@ class _GUILogger:
         pass  # handled via progress_hooks
 
     def warning(self, msg):
+        # Pomijaj szumy techniczne — te problemy i tak widać w [ERR] lub nie mają znaczenia
+        _ignore = (
+            'Skipping unsupported client',
+            'po_token',
+            'PO Token',
+            'GVS PO Token',
+            'n challenge',
+            'n-challenge',
+            'remote components',
+            'Remote components',
+            'challenge solver',
+            'SABR',
+        )
+        if any(s in msg for s in _ignore):
+            return
         self._log(f'  [WARN] {msg}', 'warn')
 
     def error(self, msg):
         self._log(f'  [ERR]  {msg}', 'err')
 
 
-def run_download(url: str, folder: str, log, set_progress):
+def run_download(url: str, folder: str, log, set_progress, workers: int = 1):
     """
     Pobiera playlistę / utwór jako MP3 320 kbps stereo.
+    workers > 1 oznacza równoczesne pobieranie wielu plików.
     Zwraca (downloaded: list[str], failed: list[str]).
     """
     import yt_dlp
 
-    downloaded, failed = [], []
+    downloaded: list = []
+    failed:     list = []
+    _dl_lock  = threading.Lock()
+    _sp_lock  = threading.Lock()
+    _slot_prg: dict = {}          # slot_id -> tekst postępu
 
-    def hook(d):
-        if d['status'] == 'downloading':
-            pct   = d.get('_percent_str', '').strip()
-            spd   = d.get('_speed_str',   '').strip()
-            eta   = d.get('_eta_str',     '').strip()
-            fname = os.path.basename(d.get('filename', ''))
-            set_progress(f'{pct}  {spd}  ETA {eta}   {fname}')
-        elif d['status'] == 'finished':
-            fname = os.path.basename(d.get('filename', ''))
-            log(f'  [OK] {fname}', 'ok')
-            downloaded.append(fname)
-            set_progress('')
-        elif d['status'] == 'error':
-            fname = os.path.basename(d.get('filename', '?'))
-            log(f'  [BLAD] {fname}', 'err')
-            failed.append(fname)
-
-    opts = {
-        'format': 'bestaudio/best',
-        'postprocessors': [{
-            'key': 'FFmpegExtractAudio',
-            'preferredcodec': 'mp3',
-            'preferredquality': '320',
-        }],
-        'postprocessor_args': {
-            'ffmpegextractaudio': ['-ac', '2', '-ar', '44100'],
-        },
-        'outtmpl': os.path.join(folder, '%(playlist_index)s - %(title)s.%(ext)s'),
-        'ignoreerrors': True,
-        'nooverwrites': True,
-        'retries': 5,
-        'fragment_retries': 5,
-        'progress_hooks': [hook],
-        'logger': _GUILogger(log),
-        'quiet': True,
-    }
+    def _update_status():
+        with _sp_lock:
+            parts = [v for v in _slot_prg.values() if v]
+        set_progress('  │  '.join(parts) if parts else '')
 
     log('─' * 56, 'head')
     log('KROK 1 — Pobieranie plikow', 'head')
@@ -110,8 +99,134 @@ def run_download(url: str, folder: str, log, set_progress):
     log(f'  URL     : {url}')
     log(f'  Katalog : {folder}\n')
 
-    with yt_dlp.YoutubeDL(opts) as ydl:
-        ydl.download([url])
+    # ── Faza A: wyciągnij listę URL-i bez pobierania ──────────
+    log('  Pobieranie informacji o playliście…', 'dim')
+    extract_opts = {
+        'quiet': True,
+        'extract_flat': 'in_playlist',
+        'logger': _GUILogger(log),
+        'extractor_args': {'youtube': {'player_client': ['mweb']}},
+    }
+    try:
+        with yt_dlp.YoutubeDL(extract_opts) as ydl:
+            info = ydl.extract_info(url, download=False)
+    except Exception as e:
+        log(f'  [ERR] {e}', 'err')
+        return [], [str(e)]
+
+    if info is None:
+        log('  [ERR] Nie mozna pobrac informacji o URL.', 'err')
+        return [], ['Brak informacji']
+
+    if 'entries' in info and info['entries']:
+        entries = [e for e in info['entries'] if e]
+        n = len(entries)
+        log(f'  Playlista: {info.get("title", "(brak)")} — {n} utworów', 'dim')
+    else:
+        entries = [info]
+        n = 1
+
+    actual_workers = min(workers, n)   # nie więcej wątków niż plików
+    if actual_workers > 1:
+        log(f'  Równoczesne pobieranie: {actual_workers} wątków\n')
+    else:
+        log('')
+
+    # Pula slotów wyświetlanych w pasku postępu (1..actual_workers)
+    _slot_pool: queue.Queue = queue.Queue()
+    for i in range(1, actual_workers + 1):
+        _slot_pool.put(i)
+
+    def _entry_url(entry: dict) -> str:
+        u = entry.get('webpage_url') or entry.get('url') or ''
+        if u.startswith('http'):
+            return u
+        vid = entry.get('id', '')
+        if entry.get('ie_key', '') == 'Youtube' and vid:
+            return f'https://www.youtube.com/watch?v={vid}'
+        return url   # fallback
+
+    # Opcje yt-dlp wspólne dla wszystkich wątków (bez hooków)
+    dl_opts_base = {
+        'format': 'bestaudio/best',
+        'postprocessors': [
+            {
+                'key': 'FFmpegExtractAudio',
+                'preferredcodec': 'mp3',
+                'preferredquality': '320',
+            },
+            {'key': 'FFmpegThumbnailsConvertor', 'format': 'jpg'},
+            {'key': 'EmbedThumbnail', 'already_have_thumbnail': False},
+        ],
+        'writethumbnail': True,
+        'postprocessor_args': {
+            'ffmpegextractaudio': ['-ac', '2', '-ar', '44100'],
+        },
+        'outtmpl': os.path.join(folder, '%(title)s.%(ext)s'),
+        'ignoreerrors': True,
+        'nooverwrites': True,
+        'retries': 5,
+        'fragment_retries': 5,
+        'quiet': True,
+        'extractor_args': {
+            'youtube': {'player_client': ['mweb']},
+        },
+    }
+
+    # ── Faza B: pobieranie (sekwencyjne lub równoległe) ────────
+    def _download_one(entry: dict):
+        entry_url = _entry_url(entry)
+        slot = _slot_pool.get()          # czekaj na wolny slot
+        lbl  = f'[{slot}]' if actual_workers > 1 else ''
+
+        def hook(d):
+            if d['status'] == 'downloading':
+                pct   = d.get('_percent_str', '').strip()
+                spd   = d.get('_speed_str',   '').strip()
+                eta   = d.get('_eta_str',     '').strip()
+                fname = os.path.basename(d.get('filename', ''))
+                short = (fname[:32] + '…') if len(fname) > 33 else fname
+                with _sp_lock:
+                    _slot_prg[slot] = f'{lbl} {pct} {spd} ETA {eta} {short}'
+                _update_status()
+            elif d['status'] == 'finished':
+                fname = os.path.basename(d.get('filename', ''))
+                log(f'  [OK] {fname}', 'ok')
+                with _dl_lock:
+                    downloaded.append(fname)
+                with _sp_lock:
+                    _slot_prg.pop(slot, None)
+                _update_status()
+            elif d['status'] == 'error':
+                fname = os.path.basename(d.get('filename', '?'))
+                log(f'  [BLAD] {fname}', 'err')
+                with _dl_lock:
+                    failed.append(fname)
+                with _sp_lock:
+                    _slot_prg.pop(slot, None)
+                _update_status()
+
+        opts = {**dl_opts_base, 'progress_hooks': [hook], 'logger': _GUILogger(log)}
+        try:
+            with yt_dlp.YoutubeDL(opts) as ydl:
+                ydl.download([entry_url])
+        except Exception as e:
+            log(f'  [ERR] {e}', 'err')
+            with _dl_lock:
+                failed.append(str(e))
+            with _sp_lock:
+                _slot_prg.pop(slot, None)
+            _update_status()
+        finally:
+            _slot_pool.put(slot)    # zwolnij slot
+
+    if actual_workers == 1:
+        for entry in entries:
+            _download_one(entry)
+    else:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=actual_workers) as ex:
+            futures = [ex.submit(_download_one, e) for e in entries]
+            concurrent.futures.wait(futures)
 
     return downloaded, failed
 
@@ -122,35 +237,113 @@ def run_download(url: str, folder: str, log, set_progress):
 
 def _clean_filename(name: str) -> str:
     """Usuwa znaki specjalne z nazwy pliku."""
+    import unicodedata
     base, ext = os.path.splitext(name)
-    base = re.sub(r'\s*\[[^\]]+\]', '', base)            # [YouTube-ID] itp.
-    base = base.replace('\uff02', '"')                    # ＂ fullwidth cudzyslow
-    base = base.replace('\uff0a', '')                     # ＊ fullwidth gwiazdka
-    base = base.replace('\u29f8', '-')                    # ⧸ big solidus
-    base = base.replace('\u2018', "'").replace('\u2019', "'")  # krzywe apostrofy
-    base = base.replace('\u201c', '"').replace('\u201d', '"')  # krzywe cudzyslowy
+
+    # Usun nawiasy kwadratowe z zawartoscia (YouTube ID itp.)
+    base = re.sub(r'\s*\[[^\]]*\]', '', base)
+
+    # Usun hashtagi (#vixa #music itd.)
+    base = re.sub(r'\s*#\S+', '', base)
+
+    # Usun emoji i symbole graficzne
+    cleaned = []
+    for ch in base:
+        cp = ord(ch)
+        cat = unicodedata.category(ch)
+        if cat in ('So', 'Cs') or 0xFE00 <= cp <= 0xFE0F or 0x1F000 <= cp <= 0x1FFFF:
+            continue
+        cleaned.append(ch)
+    base = ''.join(cleaned)
+
+    # Fullwidth znaki -> ASCII
+    base = base.replace('\uff02', '"')   # ＂
+    base = base.replace('\uff0a', '')    # ＊
+    base = base.replace('\u29f8', '-')   # ⧸
+    base = base.replace('\u2018', "'").replace('\u2019', "'")
+    base = base.replace('\u201c', '"').replace('\u201d', '"')
+    base = base.replace('\uff01', '!')   # ！
+    base = base.replace('\uff1f', '?')   # ？
+
+    # Klamry -> nawiasy
     base = base.replace('{', '(').replace('}', ')')
+
+    # Usun @ i $
     base = base.replace('@', '').replace('$', '')
+
+    # Usun wiszacy myslnik/spacje na koncu (np. "Closeness -")
+    base = re.sub(r'[\s\-_]+$', '', base)
+
+    # Znormalizuj spacje
     base = re.sub(r' {2,}', ' ', base).strip()
     return base + ext
 
 
 def _parse_artist_title(filename: str):
+    """Parsuje nazwe pliku na (artist, title) po znaku ' - '.
+    Ignoruje wiodacy numer sciezki (np. '001 - ', '12 - ').
+    Wszystko przed pierwszym ' - ' to artysta, reszta to tytul.
+    """
     base = os.path.splitext(filename)[0]
+
+    # Usun wiodacy numer (np. "001 - " lub "12 - ")
+    base = re.sub(r'^\d+\s*-\s*', '', base).strip()
+
     if ' - ' in base:
         artist, title = base.split(' - ', 1)
         return artist.strip(), title.strip()
+
     return '', base.strip()
+
+
+def _square_jpeg(data: bytes, size: int = 500) -> bytes:
+    """
+    Przycina obraz do kwadratu (center crop) i skaluje do size×size px.
+    Zwraca bajty JPEG gotowe do osadzenia w APIC.
+    Wymaga Pillow. Jeśli Pillow nie jest dostępne, zwraca oryginalne dane.
+    """
+    try:
+        from PIL import Image
+        import io
+        img = Image.open(io.BytesIO(data)).convert('RGB')
+        w, h = img.size
+        side = min(w, h)
+        left = (w - side) // 2
+        top  = (h - side) // 2
+        img  = img.crop((left, top, left + side, top + side))
+        img  = img.resize((size, size), Image.LANCZOS)
+        buf  = io.BytesIO()
+        img.save(buf, format='JPEG', quality=90)
+        return buf.getvalue()
+    except Exception:
+        return data  # fallback: oryginał bez zmian
 
 
 def _clean_metadata(path: str):
     """
-    Usuwa stare tagi i zapisuje czyste ID3v2.3 (Artist + Title).
+    Czyści ID3 do wersji 2.3 (Artist + Title) zachowując grafikę okładki (APIC).
     Zwraca (ok: bool, error: str).
     """
     try:
-        from mutagen.id3 import ID3, TIT2, TPE1
+        from mutagen.id3 import ID3, TIT2, TPE1, APIC
         from mutagen.mp3 import MP3
+
+        # Zachowaj istniejące okładki przed wyczyszczeniem (skaluj do 500×500 dla Pioneer)
+        saved_apic = []
+        try:
+            existing = ID3(path)
+            for key, frame in existing.items():
+                if key.startswith('APIC'):
+                    processed = _square_jpeg(frame.data)
+                    saved_apic.append(APIC(
+                        encoding=3,
+                        mime='image/jpeg',
+                        type=frame.type,
+                        desc=frame.desc,
+                        data=processed,
+                    ))
+        except Exception:
+            pass
 
         audio = MP3(path)
         audio.tags = None
@@ -161,6 +354,8 @@ def _clean_metadata(path: str):
         tags.add(TIT2(encoding=3, text=title))
         if artist:
             tags.add(TPE1(encoding=3, text=artist))
+        for apic in saved_apic:
+            tags.add(apic)
         tags.save(path, v2_version=3)
         return True, ''
     except Exception as e:
@@ -199,6 +394,8 @@ def run_cleaning(folder: str, log):
 
         success, err_msg = _clean_metadata(new_path)
         if success:
+            artist, title = _parse_artist_title(new_name)
+            log(f'       artist: {artist or "(brak)"}  |  title: {title}', 'dim')
             ok += 1
         else:
             log(f'  [WARN metadane] {new_name}: {err_msg}', 'warn')
@@ -230,11 +427,12 @@ class App(tk.Tk):
 
     def __init__(self):
         super().__init__()
-        self.title('YouTube Playlist Downloader')
+        self.title('Madafaka Downloader')
         self.configure(bg=_C['bg'])
         self.minsize(760, 600)
         self.resizable(True, True)
         self._q = queue.Queue()
+        self._workers_var = tk.IntVar(value=3)
         self._build_ui()
         self._center()
         self._poll()
@@ -246,7 +444,7 @@ class App(tk.Tk):
         tk.Frame(self, bg=_C['bg'], height=10).pack(fill='x')
 
         # tytuł
-        tk.Label(self, text='YouTube Playlist Downloader',
+        tk.Label(self, text='Madafaka Downloader',
                  font=('Segoe UI', 15, 'bold'), bg=_C['bg'], fg=_C['accent']).pack()
         tk.Label(self, text='MP3 · Stereo · 320 kbps · Auto-clean dla Rekordbox',
                  font=('Segoe UI', 9), bg=_C['bg'], fg=_C['dim']).pack(pady=(2, 14))
@@ -286,6 +484,42 @@ class App(tk.Tk):
         tk.Button(row2, text='Wybierz\u2026', font=('Segoe UI', 9),
                   bg=_C['surface'], fg=_C['text'], relief='flat', padx=10, cursor='hand2',
                   command=self._pick_dir).pack(side='right', padx=(6, 0))
+
+        # przyciski
+        btn_row = tk.Frame(self, bg=_C['bg'])
+        btn_row.pack(pady=(10, 8))
+        self._btn = tk.Button(btn_row, text='\u25b6   Pobierz i oczysc',
+                              font=('Segoe UI', 11, 'bold'),
+                              bg=_C['accent'], fg='white', relief='flat',
+                              padx=26, pady=10, cursor='hand2',
+                              command=self._start)
+        self._btn.pack(side='left', padx=4)
+        tk.Button(btn_row, text='Wyczysc log', font=('Segoe UI', 9),
+                  bg=_C['surface'], fg=_C['dim'], relief='flat',
+                  padx=12, pady=10, cursor='hand2',
+                  command=self._clear_log).pack(side='left', padx=4)
+
+        # liczba równoczesnych pobrań
+        g3 = tk.Frame(self, bg=_C['bg'])
+        g3.pack(fill='x', padx=20, pady=4)
+        tk.Label(g3, text='R\u00f3wnoczesne pobieranie (1\u20135 plik\u00f3w naraz):',
+                 font=('Segoe UI', 10), bg=_C['bg'], fg=_C['text']).pack(anchor='w')
+        row3 = tk.Frame(g3, bg=_C['bg'])
+        row3.pack(fill='x', pady=3)
+        spin_box = tk.Frame(row3, bg=_C['surface'],
+                            highlightbackground=_C['border'], highlightthickness=1)
+        spin_box.pack(side='left')
+        tk.Spinbox(spin_box, textvariable=self._workers_var,
+                   from_=1, to=5, width=3,
+                   font=('Segoe UI', 12, 'bold'),
+                   bg=_C['surface'], fg=_C['accent'],
+                   buttonbackground=_C['surface'],
+                   relief='flat', bd=8).pack()
+        self._workers_desc = tk.Label(row3,
+                   text=self._workers_label(self._workers_var.get()),
+                   font=('Segoe UI', 9), bg=_C['bg'], fg=_C['dim'])
+        self._workers_desc.pack(side='left', padx=(10, 0))
+        self._workers_var.trace_add('write', self._on_workers_change)
 
         # przyciski
         btn_row = tk.Frame(self, bg=_C['bg'])
@@ -342,6 +576,24 @@ class App(tk.Tk):
         if d:
             self._dir.set(d)
 
+    @staticmethod
+    def _workers_label(n: int) -> str:
+        labels = {
+            1: 'jeden plik na raz (bezpieczne, wolniejsze)',
+            2: 'dwa pliki na raz',
+            3: 'trzy pliki na raz (zalecane)',
+            4: 'cztery pliki na raz',
+            5: 'pięć plików na raz (maksymalne obciążenie)',
+        }
+        return labels.get(int(n), '')
+
+    def _on_workers_change(self, *_):
+        try:
+            n = self._workers_var.get()
+            self._workers_desc.configure(text=self._workers_label(n))
+        except (tk.TclError, ValueError):
+            pass
+
     def _log(self, msg: str, tag: str = ''):
         """Wątek-bezpieczne dodanie linii do logu."""
         self._q.put(('log', msg, tag))
@@ -386,10 +638,11 @@ class App(tk.Tk):
         if not folder:
             messagebox.showwarning('Brak katalogu', 'Wybierz katalog docelowy.')
             return
+        workers = max(1, min(5, self._workers_var.get()))
         self._btn.configure(state='disabled', text='\u23f3  Trwa pobieranie\u2026')
-        threading.Thread(target=self._worker, args=(url, folder), daemon=True).start()
+        threading.Thread(target=self._worker, args=(url, folder, workers), daemon=True).start()
 
-    def _worker(self, url: str, folder: str):
+    def _worker(self, url: str, folder: str, workers: int = 1):
         log      = self._log
         set_prog = lambda msg: self._q.put(('progress', msg))
 
@@ -414,7 +667,7 @@ class App(tk.Tk):
 
         # ── KROK 1: pobieranie ────────────────────────────────
         try:
-            downloaded, failed_dl = run_download(url, folder, log, set_prog)
+            downloaded, failed_dl = run_download(url, folder, log, set_prog, workers)
         except Exception as e:
             log(f'BLAD pobierania: {e}', 'err')
             self._q.put(('done',))

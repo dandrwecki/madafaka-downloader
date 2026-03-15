@@ -2,7 +2,7 @@
 set -e
 
 echo "============================================================"
-echo "  YouTube Playlist Downloader - macOS Setup"
+echo "  Madafaka Downloader - macOS Setup"
 echo "============================================================"
 echo ""
 
@@ -22,14 +22,22 @@ else
     echo "[2/4] ffmpeg juz zainstalowany."
 fi
 
+# --- Node.js (wymagane przez yt-dlp do rozwiazywania n-challenge YouTube) ---
+if ! command -v node &>/dev/null; then
+    echo "[3/4] Instalowanie Node.js (yt-dlp n-challenge solver)..."
+    brew install node
+else
+    echo "[3/4] Node.js juz zainstalowany."
+fi
+
 # --- Python deps ---
-echo "[3/4] Instalowanie/aktualizowanie zaleznosci Python..."
-pip3 install --upgrade yt-dlp mutagen \
+echo "[4/5] Instalowanie/aktualizowanie zaleznosci Python..."
+pip3 install --upgrade yt-dlp mutagen Pillow \
     --break-system-packages 2>/dev/null || \
-pip3 install --upgrade yt-dlp mutagen
+pip3 install --upgrade yt-dlp mutagen Pillow
 
 # --- tkinter (wymagane dla GUI) ---
-echo "[4/4] Instalowanie python-tk (GUI)..."
+echo "[5/5] Instalowanie python-tk (GUI)..."
 PY_VER=$(python3 -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')")
 brew install "python-tk@${PY_VER}" 2>/dev/null || true
 
