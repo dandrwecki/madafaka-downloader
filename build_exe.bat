@@ -33,18 +33,25 @@ echo [2/4] Pobieranie ffmpeg (statyczna wersja Windows)...
 if exist "ffmpeg.exe" (
     echo ffmpeg.exe juz istnieje - pomijam pobieranie.
 ) else (
-    powershell -ExecutionPolicy Bypass -Command ^
-        "$url = 'https://github.com/BtbN/ffmpeg-builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip'; ^
-        Write-Host 'Pobieranie archiwum ffmpeg...'; ^
-        Invoke-WebRequest -Uri $url -OutFile '_ffmpeg_dl.zip' -UseBasicParsing; ^
-        Write-Host 'Rozpakowywanie...'; ^
-        Expand-Archive -Path '_ffmpeg_dl.zip' -DestinationPath '_ffmpeg_tmp' -Force; ^
-        $binDir = (Get-ChildItem '_ffmpeg_tmp' -Recurse -Filter 'ffmpeg.exe').DirectoryName; ^
-        Copy-Item \"$binDir\ffmpeg.exe\" '.' -Force; ^
-        Copy-Item \"$binDir\ffprobe.exe\" '.' -Force; ^
-        Remove-Item '_ffmpeg_dl.zip' -Force; ^
-        Remove-Item '_ffmpeg_tmp' -Recurse -Force; ^
-        Write-Host 'ffmpeg gotowy.'"
+    :: Zapisz skrypt PowerShell do pliku tymczasowego - unika problemow z ^ i .DirectoryName
+    (
+        echo $url = 'https://github.com/BtbN/ffmpeg-builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip'
+        echo Write-Host 'Pobieranie archiwum ffmpeg...'
+        echo Invoke-WebRequest -Uri $url -OutFile '_ffmpeg_dl.zip' -UseBasicParsing
+        echo Write-Host 'Rozpakowywanie...'
+        echo Expand-Archive -Path '_ffmpeg_dl.zip' -DestinationPath '_ffmpeg_tmp' -Force
+        echo $ffmpegExe = Get-ChildItem '_ffmpeg_tmp' -Recurse -Filter 'ffmpeg.exe' ^| Select-Object -First 1
+        echo $binDir = $ffmpegExe.DirectoryName
+        echo Copy-Item "$binDir\ffmpeg.exe" '.' -Force
+        echo Copy-Item "$binDir\ffprobe.exe" '.' -Force
+        echo Remove-Item '_ffmpeg_dl.zip' -Force
+        echo Remove-Item '_ffmpeg_tmp' -Recurse -Force
+        echo Write-Host 'ffmpeg gotowy.'
+    ) > _get_ffmpeg.ps1
+
+    powershell -ExecutionPolicy Bypass -File _get_ffmpeg.ps1
+    del /q _get_ffmpeg.ps1
+
     if errorlevel 1 (
         echo BLAD: Nie udalo sie pobrac ffmpeg.
         echo Pobierz recznie z https://ffmpeg.org i skopiuj ffmpeg.exe i ffprobe.exe tutaj.
