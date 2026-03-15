@@ -39,19 +39,24 @@ echo [2/4] Pobieranie ffmpeg (statyczna wersja Windows)...
 if exist "ffmpeg.exe" (
     echo ffmpeg.exe juz istnieje - pomijam pobieranie.
 ) else (
-    :: Zapisz skrypt PowerShell do pliku tymczasowego
-    powershell -ExecutionPolicy Bypass -Command ^
-        "Set-Content -Path '_get_ffmpeg.ps1' -Encoding UTF8 -Value @'"`n$url = 'https://github.com/BtbN/ffmpeg-builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip'`nWrite-Host 'Pobieranie archiwum ffmpeg...'`nInvoke-WebRequest -Uri $url -OutFile '_ffmpeg_dl.zip' -UseBasicParsing`nWrite-Host 'Rozpakowywanie...'`nExpand-Archive -Path '_ffmpeg_dl.zip' -DestinationPath '_ffmpeg_tmp' -Force`n$ffmpegExe = Get-ChildItem '_ffmpeg_tmp' -Recurse -Filter 'ffmpeg.exe' | Select-Object -First 1`n$binDir = $ffmpegExe.DirectoryName`nCopy-Item (Join-Path $binDir 'ffmpeg.exe') '.' -Force`nCopy-Item (Join-Path $binDir 'ffprobe.exe') '.' -Force`nRemove-Item '_ffmpeg_dl.zip' -Force`nRemove-Item '_ffmpeg_tmp' -Recurse -Force`nWrite-Host 'ffmpeg gotowy.'`n'@"
-
-    powershell -ExecutionPolicy Bypass -File _get_ffmpeg.ps1
-    del /q _get_ffmpeg.ps1
-
+    echo Pobieranie archiwum ffmpeg...
+    curl -L -o _ffmpeg_dl.zip "https://github.com/BtbN/ffmpeg-builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip"
     if errorlevel 1 (
-        echo BLAD: Nie udalo sie pobrac ffmpeg.
+        echo BLAD: Nie udalo sie pobrac ffmpeg przez curl.
         echo Pobierz recznie z https://ffmpeg.org i skopiuj ffmpeg.exe i ffprobe.exe tutaj.
         pause
         exit /b 1
     )
+    echo Rozpakowywanie...
+    python -c "import zipfile,os,shutil; z=zipfile.ZipFile('_ffmpeg_dl.zip'); [shutil.copy2(z.extract(n,'_ffmpeg_tmp'), os.path.basename(n)) for n in z.namelist() if n.endswith('/ffmpeg.exe') or n.endswith('/ffprobe.exe')]; z.close()"
+    if errorlevel 1 (
+        echo BLAD: Nie udalo sie rozpakowac ffmpeg.
+        pause
+        exit /b 1
+    )
+    if exist "_ffmpeg_tmp" rmdir /s /q "_ffmpeg_tmp"
+    if exist "_ffmpeg_dl.zip" del /q "_ffmpeg_dl.zip"
+    echo ffmpeg gotowy.
 )
 echo OK.
 
